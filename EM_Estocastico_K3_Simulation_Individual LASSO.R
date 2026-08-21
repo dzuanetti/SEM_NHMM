@@ -985,13 +985,13 @@ for (p in 1:R){
   S_hat_test <- NULL
   
   S_hat_test[1]<-S_test[1] #O valor para o primeiro estado oculto
-  Y_hat_test[1]<-rnorm(1,mu_hat[S_hat_test[1]],sigma_hat[S_hat_test[1]])# O valor para o primeiro valor observavel
+  Y_hat_test[1]<-rnorm(1,Mu_Rep[S_hat_test[1]],Sigma_Rep[S_hat_test[1]])# O valor para o primeiro valor observavel
   for (t in 2:length(Y_test)){
     prob<-NULL
     for (i in 1:K) prob[i]<-exp(X_test[t,]%*%matrix(Best_Beta_Arrays[i,,S_hat_test[t-1],p],ncol=1))
     prob<-prob/sum(prob)
     S_hat_test[t]<-which.max(prob)
-    Y_hat_test[t]<-sum(prob * mu_hat)
+    Y_hat_test[t]<-sum(prob * Mu_Rep)
   }
   
   MSPE_Teste[p] <- (sum((Y_hat_test - Y_test)^2))/length(Y_test)
