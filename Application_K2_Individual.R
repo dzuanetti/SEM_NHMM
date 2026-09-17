@@ -1,14 +1,10 @@
 ###########################################################################
 #                                                                         #
-#            APPLICATION INDIVI LASSO - 3 ESTADOS OCULTOS                 #
+#            APPLICATION INDIVIDUAL LASSO - 2 HIDDEN STATES               #
 #                                                                         #
 ###########################################################################
 
 library('label.switching')
-library(glmnet) # Regressão Linear Penalizada
-library(forecast) # Auto Regressive Integrated Moving Average
-library(e1071)
-library(ggplot2)
 library(dplyr)
 library(tidyr)
 library(lubridate)
@@ -25,6 +21,39 @@ rDiscreta<-function(p){
   return(val)}
 #####
 
+## Escrevemos a função para recalcular a matriz de transição em cada iteração
+## do algoritmo EM Estocástico.
+  Mat_trans <-function(covar,BetaArray){
+    B = matrix(nrow=K, ncol=K)
+    for (j in 1:K) {
+      numerator<-NULL
+      for (i in 1:K) numerator[i] = covar%*%BetaArray[i,,j]
+      numerator<-exp(numerator-max(numerator))
+      B[,j] = numerator/sum(numerator)
+      }  
+    return(B)
+  }
+
+  #######   Escrevemos as funções que serão o objetivo da optimização   ######
+  # Com o temos um array de Betas, utilizaremos tres funções para achar os valores otimos
+  # Uma para a matriz Betas[,,1] uma para a matriz Betas[,,2] e uma para 
+  # a matriz Betas[,,3]
+  FSM1 <-function(params){#função a maximizar para achar os Betas_1
+    resp <- (sum(1 - log(1 + exp(Xtemp11%*%params))) + sum(Xtemp12%*%params - log(1 + exp(Xtemp12%*%params))))
+  }
+  
+  FSM2 <-function(params){#função a maximizar para achar os Betas_2
+    resp <- (sum(1 - log(1 + exp(Xtemp21%*%params))) + sum(Xtemp22%*%params - log(1 + exp(Xtemp22%*%params))))
+  }
+  
+  FSM1_B <-function(params){#função a maximizar para achar os Betas_1
+    resp <- (sum(1 - log(1 + exp(Xtemp11%*%params))) + sum(Xtemp12%*%params - log(1 + exp(Xtemp12%*%params)))) - lambda1*sum(abs(params[2:D])) 
+  }
+  
+  FSM2_B <-function(params){#função a maximizar para achar os Betas_2
+    resp <- (sum(1 - log(1 + exp(Xtemp21%*%params))) + sum(Xtemp22%*%params - log(1 + exp(Xtemp22%*%params))))  - lambda2*sum(abs(params[2:D]))
+  }
+  
 
 train_size = 0.80
 validation_size = 0.15
@@ -33,23 +62,23 @@ test_size = 0.05
 
 zero_threshold = 0.05
 K=2   #Numero de estados ocultos
-D=16   #Quantidade de Covariaveis
+D=8   #Quantidade de Covariaveis
 tol<-0.0000001 #Nivel de tolerancia que estabelecemos como criterio de parada do EM Est
 tolval=NULL
 tolval[1]=1
 optim_algo = "BFGS" #Algorithm to use in the optimization process
-n_max_iter_EM = 20
+n_max_iter_EM = 11
+n_max_iter_EM_2 = 51
 Tempo <- NULL
 lag_var = TRUE
 
-mainDir = paste("/home/gustavo/Documents/Academic/Cenarios/Application/Code/K2/Individual",sep = "")
-subDir = paste("Lagged_",toString(lag_var),"_Resultados_Application_Individual_K",toString(K),sep = "")
+mainDir = paste("/Users/daianezuanetti/Library/CloudStorage/Dropbox/artigo_Gustavo/Códigos",sep = "")
+subDir = paste("Lagged_",toString(lag_var),"_Resultados_Application_Global_K",toString(K),sep = "")
 dir.create(file.path(mainDir, subDir), showWarnings = FALSE)
 setwd(file.path(mainDir, subDir))
 
-
-set.seed(2)
-lambdas <- seq(0.02, 0.03, by=0.001)
+set.seed(100)
+lambdas <- seq(0.0, 0.04, by=0.01)
 
 #Metricas de Performance Preditiva 
 MSPE_Validação <- NULL
@@ -59,24 +88,9 @@ MSPE_Teste <- NULL
 #Metricas de Performance de Estimação dos ParÂmetros das VA observáveis
 Best_Beta_Arrays <- array(rep(0,K*D*K), dim=c(K,D,K))
 
-
 ## SEÇÃO DE DEFINICAÇÃO DOS PARAMETROS PARA SIMULAÇÃO DE DADOS ##
 ################################################################
 P0=rep(1/K,K) #Inicializamos vetor de probabilidades inciais para o HMM
-
-
-##########################
-# glmnet
-MSPE_Teste_glmnet <- NULL
-##########################
-
-##########################
-# arima 
-
-MSPE_Teste_arima <- NULL
-##########################
-
-tempo_inicial<-Sys.time()
 
 #   INICIO DE CAPTURA E TRATAMENTO DE DADOS ##
 #########################################
@@ -116,13 +130,6 @@ if (lag_var) {
     mutate(Chuva = lag(Chuva, order_by = Week))
 }
 
-ggplot(dados_semanal, aes(x = Chuva)) +
-  geom_histogram(bins = 40, fill = "skyblue", color = "black") +
-  labs(title = "Histogram of Weekly Value",
-       x = "Value",
-       y = "Count") +
-  theme_minimal()
-
 dados_semanal <- drop_na(dados_semanal)
 
 Y <- dados_semanal$Chuva
@@ -144,7 +151,6 @@ X <- cbind(Const,X)
 ###########################################
 #   FIM DA SIMULAÇÂO DOS DADOS ##
 
-print("Segmentando Base de Dados em Treino, Validação e Teste...")
 #   SEPARAR BASES EM TREINO< VALIDAÇÃO E TESTE
 ##############################################
 
@@ -154,13 +160,13 @@ cutoff_validation = length(Y)*(train_size+validation_size)
 
 #Cria as bases 
 Y_training = Y[1:cutoff_treino]
-X_training = X[1:cutoff_treino, ]
+X_training = X[1:cutoff_treino,c(1,3,6,9,12,14,15,16)]
 
 Y_validation = Y[(cutoff_treino+1):cutoff_validation]
-X_validation = X[(cutoff_treino+1):cutoff_validation, ]
+X_validation = X[(cutoff_treino+1):cutoff_validation,c(1,3,6,9,12,14,15,16)]
 
 Y_test = Y[(cutoff_validation+1):T]
-X_test = X[(cutoff_validation+1):T, ]
+X_test = X[(cutoff_validation+1):T,c(1,3,6,9,12,14,15,16)]
 
 ##############################################
 # FIM DE SEPARAÇÃO DAS BASES EM TREINO, VALIDATION E TESTE
@@ -208,57 +214,14 @@ for (h in 1:length(lambdas)){
     lambda1 = lambdas[h]
     lambda2 = lambdas[w]
     
-    #######   Escrevemos as funções que serão o objetivo da optimização   ######
-    # Com o temos um array de Betas, utilizaremos tres funções para achar os valores otimos
-    # Uma para a matriz Betas[,,1] uma para a matriz Betas[,,2] e uma para 
-    # a matriz Betas[,,3]
-    FSM1 <-function(params){#função a maximizar para achar os Betas_1
-      resp <- (sum(1 - log(1 + exp(Xtemp11%*%params))) + sum(Xtemp12%*%params - log(1 + exp(Xtemp12%*%params)))) - lambda1*sum(abs(params[2:D])) 
-    }
-    
-    FSM2 <-function(params){#função a maximizar para achar os Betas_2
-      resp <- (sum(1 - log(1 + exp(Xtemp21%*%params))) + sum(Xtemp22%*%params - log(1 + exp(Xtemp22%*%params)))) - lambda2*sum(abs(params[2:D]))
-    }
-    
-    FSM1_B <-function(params){#função a maximizar para achar os Betas_1
-      resp <- (sum(1 - log(1 + exp(Xtemp11%*%params))) + sum(Xtemp12%*%params - log(1 + exp(Xtemp12%*%params)))) - lambda1*sum(abs(params[2:D])) 
-    }
-    
-    FSM2_B <-function(params){#função a maximizar para achar os Betas_2
-      resp <- (sum(1 - log(1 + exp(Xtemp21%*%params))) + sum(Xtemp22%*%params - log(1 + exp(Xtemp22%*%params))))  - lambda2*sum(abs(params[2:D]))
-    }
-    
     #   Procedimento de Estimação   
     #Geramos uma sequência de treinamento
     for (i in 1:length(Y_training)) {
       S_treino[i] = rDiscreta(P_Treino)
     }
     
-    ## Escrevemos a função para recalcular a matriz de transição em cada iteração
-    ## do algoritmo EM Estocástico.
-    Mat_trans <-function(covar){
-      B = matrix(nrow=K, ncol=K)
-      for (j in 1:K) {
-        for (i in 1:K){
-          numerator = exp(covar%*%BetaArray[i,,j])
-          denom = 0
-          for (l in 1:K){
-            denom = denom + exp(covar%*%BetaArray[l,,j])
-          }
-          B[i,j] = numerator/denom
-        }  
-      }
-      return(B)
-    }
-    
     val=1
-    tolval[1]=1
-    #Agora executamos o Algoritmo EM Estocástico
-    while ( abs(tolval[val])>tol && val < n_max_iter_EM){
-      #print(val)
-      #print(tolval[val])
-      #VeroSimActual=VeroSimProxima
-      #Aqui devemos calcular a diferença entre a L.V. em na iteração atual e na anterior  
+
       LL_parte1 = 0
       LL_parte2 = 0
       LL_parte3 = 0
@@ -273,8 +236,6 @@ for (h in 1:length(lambdas)){
         sigma_hat[k] = sqrt((sum((Y_id - mu_hat[k])^2)) / (sum(id) - 1)) #DECIDIR SOBRE O ESTIMADOR DA VARIANCIA (VICIADO OU NṼICIADO)
       }
       
-      #print(mu_hat)
-      #print(sigma_hat)
       #Calculo da Verosimilhança como valor de tolerança
       LL_parte1 = -.5*length(Y_training)*log(2*pi)
       
@@ -287,18 +248,21 @@ for (h in 1:length(lambdas)){
       temp=NULL
       for (i in 2:length(Y_training)) {#Calculo do terceiro segmento da LL
         for (g in 1:K) {
-          temp[g]<-exp(X[i,]%*%matrix(BetaArray[g,,S_treino[i-1]],ncol=1))
+          temp[g]<-exp(X_training[i,]%*%matrix(BetaArray[g,,S_treino[i-1]],ncol=1))
         }
-        LL_parte4 = LL_parte4 + (X[i,]%*%matrix(BetaArray[S_treino[i],,S_treino[i-1]]) - log(sum(temp), base = exp(1)))
+        LL_parte4 = LL_parte4 + (X_training[i,]%*%matrix(BetaArray[S_treino[i],,S_treino[i-1]]) - log(sum(temp), base = exp(1)))
       }
       VeroSimActual <- log(P0[S_treino[1]]) + LL_parte1 + (LL_parte2 + LL_parte3) + LL_parte4 #calculo da LogVerosim
+      tolval[1]=VeroSimActual
+
+    while (abs(tolval[val])>tol && val < n_max_iter_EM){
       
-      
+      val=val+1
       #Calculamos a sequência S_treino utilizando os Betas
       #Atualizados na iteração passada e os valores observados Y
-      S_treino[1]=which.max(dnorm(Y[1], mu_hat, sigma_hat))
+#      S_treino[1]=which.max(dnorm(Y[1], mu_hat, sigma_hat))
       for (i in 2:length(Y_training)) {
-        A_hat_t = Mat_trans(X[i,])
+        A_hat_t = Mat_trans(X_training[i,],BetaArray)
         if (any(is.na(A_hat_t))){
           print("NaN encountered in Transition Matrix Calculation")
           A_hat_t[is.nan(A_hat_t)] = 1 
@@ -309,7 +273,6 @@ for (h in 1:length(lambdas)){
           print("NaN encountered in S_treino update")
           S_treino[i]=which.max(A_hat_t[S_treino[i], ])
         } else {
-          #S_treino[i]=which.max(prob)  
           S_treino[i]=which.max(prob)  
         }
       }
@@ -345,7 +308,15 @@ for (h in 1:length(lambdas)){
           }
         }
       }
-      
+ 
+     for (k in 1:K){
+      id = S_treino == k
+      mu_hat[k] = sum(id*Y_training)/sum(id)
+      Y_id_list = split(Y_training,id)
+      Y_id = unlist(Y_id_list[2], use.names = FALSE)
+      sigma_hat[k] = max(sqrt((sum((Y_id - mu_hat[k])^2)) / (sum(id) - 1)),0.001) #DECIDIR SOBRE O ESTIMADOR DA VARIANCIA (VICIADO OU NṼICIADO)
+    }
+     
       #### Aqui inicia a filtragem dos dados para cada iteração
       Xtemp11<-NULL
       Xtemp12<-NULL
@@ -355,17 +326,17 @@ for (h in 1:length(lambdas)){
       for (t in 2:length(Y_training)) {
         #filtros indo para o Estado # 1
         if(S_treino[t]%in%1 && S_treino[t-1]%in%1)
-          Xtemp11<-rbind(Xtemp11, X[t,])
+          Xtemp11<-rbind(Xtemp11, X_training[t,])
         
         if(S_treino[t]%in%1 && S_treino[t-1]%in%2)
-          Xtemp21<-rbind(Xtemp21, X[t,])
+          Xtemp21<-rbind(Xtemp21, X_training[t,])
         
         #Filtros indo para o Estado # 2
         if(S_treino[t]%in%2 && S_treino[t-1]%in%1)
-          Xtemp12<-rbind(Xtemp12, X[t,])
+          Xtemp12<-rbind(Xtemp12, X_training[t,])
         
         if(S_treino[t]%in%2 && S_treino[t-1]%in%2)
-          Xtemp22<-rbind(Xtemp22, X[t,])
+          Xtemp22<-rbind(Xtemp22, X_training[t,])
       }
       
       if (is.null(Xtemp11)){
@@ -462,65 +433,26 @@ for (h in 1:length(lambdas)){
       temp=NULL
       for (i in 2:length(Y_training)) {#Calculo do terceiro segmento da LL
         for (g in 1:K) {
-          temp[g]<-exp(X[i,]%*%matrix(BetaArray[g,,S_treino[i-1]],ncol=1))
+          temp[g]<-exp(X_training[i,]%*%matrix(BetaArray[g,,S_treino[i-1]],ncol=1))
         }
-        LL2_parte4 = LL2_parte4 + (X[i,]%*%matrix(BetaArray[S_treino[i],,S_treino[i-1]]) - log(sum(temp), base = exp(1)))
+        LL2_parte4 = LL2_parte4 + (X_training[i,]%*%matrix(BetaArray[S_treino[i],,S_treino[i-1]]) - log(sum(temp), base = exp(1)))
       }
       VeroSimProxima <- log(P0[S_treino[1]]) + LL2_parte1 + (LL2_parte2 + LL2_parte3) + LL2_parte4 #calculo da LogVerosim
       
-      val=val+1
       VerAct[val]<-VeroSimActual
       VerProx[val]<-VeroSimProxima
       tolval[val]<-VeroSimProxima - VeroSimActual
+      VeroSimActual<-VeroSimProxima
       # print(tolval[val])
       
       message(paste('\r',"Lasso iteration # ",toString(lasso_iterator),"; Valor de Lambda = ",toString(c(lambda1,lambda2)),"; Mu_hat:",toString(round(mu_hat,3)),". Sigma_hat:",toString(round(sigma_hat,3)),"                  ", collapse = ""), appendLF = FALSE) #Messagem indicando o numero da replica atual
     }#######Fim da primeira rodada do EM Estocastico#######
-    
-    # #Criar algumas matrizes para fazer calculos e manipular a saida MCMC
-    # #nestas matrizes, as estimativas serão reordenadas usando o metodo ECR
-    # mat_thetar<-matrix(nrow = 1, ncol = K)
-    # reorder_S<-matrix(nrow = 1, ncol = length(Y_training))
-    # mat_S<-matrix(nrow = 1, ncol = length(Y_training))
-    # mat_S[1,]<-S_treino
-    # zpvt_S = S #Como pivot para o metodo ECR usamos o S original
-    # perms_S = ecr(zpivot = zpvt_S, z = mat_S, K = K)# aplicamos o metodo ECR que retornara as permutações das dos estados ocultos que devem ser utilizadas para reordenar a saida do algoritmo bayesiano
-    # 
-    # Reordenamos a saido do algoritmo EMEst usando as 
-    # permutações fornecidas pelo ECR para K=3 
-    # só rerotulamos a Sequência S_treino, e reordenamos os Thetas
-    # Os Betas serão estimados usando a sequência S_Treino rerotulada
-    # e os Thetas, na segunda etapa do EMEst
-    
-    # for (i in 1:1) {
-    #   for (j in 1:length(Y_training)) {
-    #     if(S_treino[j]!=Y_training[j] && ((perms_S$permutations[i,1]==2 && perms_S$permutations[i,2]==1))){
-    #       S_treino[j]=perms_S$permutations[i,perms_S$permutations[i,S_treino[j]]]
-    #     }
-    #     
-    #     else {
-    #       S_treino[j]=perms_S$permutations[i,perms_S$permutations[i,S[j]]]
-    #     }
-    #   }
-    #   mu_hat<-mu_hat[perms_S$permutations[i,]]
-    #   sigma_hat<-sigma_hat[perms_S$permutations[i,]]
-    # }
-    
-    # repetimos o EM Estocastico, porque para K=3
-    # Entraremos com a sequência S_treino estimada na rodada 
-    # anterior E ja rotulada corretamente usando o ECR Para resolver
-    # o problema dos Parametros Fantasmas e a troca de rotulos
-    
-    VeroSimProxima=1
-    VeroSimActual=0
+        
     val=1
     tolval=NULL
-    tolval[1]=3
+    tolval[1]=10
     tol2 = 2
-    
-    while (tolval[val]>tol2) {
-      #print(tolval[val])
-      #Aqui devemos calcular a diferença entre a L.V. em na iteração atual e na anterior  
+
       LL_parte1 = 0
       LL_parte2 = 0
       LL_parte3 = 0
@@ -538,37 +470,16 @@ for (h in 1:length(lambdas)){
       temp=NULL
       for (i in 2:length(Y_training)) {#Calculo do terceiro segmento da LL
         for (g in 1:K) {
-          temp[g]<-exp(X[i,]%*%matrix(BetaArray[g,,S_treino[i-1]],ncol=1))
+          temp[g]<-exp(X_training[i,]%*%matrix(BetaArray[g,,S_treino[i-1]],ncol=1))
         }
-        LL_parte4 = LL_parte4 + (X[i,]%*%matrix(BetaArray[S_treino[i],,S_treino[i-1]]) - log(sum(temp), base = exp(1)))
+        LL_parte4 = LL_parte4 + (X_training[i,]%*%matrix(BetaArray[S_treino[i],,S_treino[i-1]]) - log(sum(temp), base = exp(1)))
       }
       VeroSimActual <- log(P0[S_treino[1]]) + LL_parte1 - (LL_parte2 + LL_parte3) + LL_parte4 #calculo da LogVerosim
-      
-      #Este segmento de codigo testa se aconteceram todas as transições possiveis
-      #No caso que elas não tinham acontecido, as que
-      #não aconteceram são forçadas a acontecer
-      TransCount <- matrix(data = c(rep(0,K^2)), nrow = K, ncol = K)
-      for (i in 2:length(S_treino)) {
-        for (j in 1:K) {
-          for (k in 1:K) {
-            if (S_treino[i]==j && S_treino[i-1]==k)
-              TransCount[k,j]=TransCount[k,j]+1
-          }
-        }
-      }
-      
-      for (j in 1:K) {
-        for (k in 1:K) {
-          if (TransCount[k,j]==0){
-            positions = sample(2:length(S_treino), 4)
-            for (d in 1:4) {
-              S_treino[positions[d]]=j
-              S_treino[positions[d]-1]=k
-            }
-          }
-        }
-      }
-      
+    
+  while (abs(tolval[val])>tol2 && val < n_max_iter_EM_2) {
+
+  	val<-val+1 
+  	      
       #filtragem dos dados
       Xtemp11<-NULL
       Xtemp12<-NULL
@@ -578,17 +489,17 @@ for (h in 1:length(lambdas)){
       for (t in 2:length(Y_training)) {
         #filtros indo para o Estado # 1
         if(S_treino[t]%in%1 && S_treino[t-1]%in%1)
-          Xtemp11<-rbind(Xtemp11, X[t,])
+          Xtemp11<-rbind(Xtemp11, X_training[t,])
         
         if(S_treino[t]%in%1 && S_treino[t-1]%in%2)
-          Xtemp21<-rbind(Xtemp21, X[t,])
+          Xtemp21<-rbind(Xtemp21, X_training[t,])
         
         #Filtros indo para o Estado # 2
         if(S_treino[t]%in%2 && S_treino[t-1]%in%1)
-          Xtemp12<-rbind(Xtemp12, X[t,])
+          Xtemp12<-rbind(Xtemp12, X_training[t,])
         
         if(S_treino[t]%in%2 && S_treino[t-1]%in%2)
-          Xtemp22<-rbind(Xtemp22, X[t,])
+          Xtemp22<-rbind(Xtemp22, X_training[t,])
         
       }
       
@@ -655,6 +566,60 @@ for (h in 1:length(lambdas)){
         }
       }
       
+    for (i in 2:length(Y_training)) {
+      A_hat_t = Mat_trans(X_training[i,],BetaArray)
+      if (any(is.na(A_hat_t))){
+        print("NaN encountered in Transition Matrix Calculation")
+        A_hat_t[is.nan(A_hat_t)] = 1 
+      }
+      prob<-(A_hat_t[S_treino[i], ]*dnorm(Y_training[i], mu_hat, sigma_hat))/sum(A_hat_t[S_treino[i], ]*dnorm(Y_training[i], mu_hat, sigma_hat))
+      #S_treino[i]=rDiscreta(prob)
+      if (any(is.na(prob))){
+        print("NaN encountered in S_treino update")
+        S_treino[i]=which.max(A_hat_t[S_treino[i], ])
+      } else {
+        S_treino[i]=which.max(prob)  
+      }
+    }
+    
+    S_treino[is.na(S_treino)] <- 1
+    
+    if (length(S_treino[is.na(S_treino)]) > 0){
+      print(length(S_treino[is.na(S_treino)]))
+    }
+    
+    #Este segmento de codigo testa se aconteceram todas as transições possiveis
+    #No caso que elas não tinham acontecido, as que
+    #não aconteceram são forçadas a acontecer
+    TransCount <- matrix(data = c(rep(0,K^2)), nrow = K, ncol = K)
+    for (i in 2:length(S_treino)) {
+      for (j in 1:K) {
+        for (k in 1:K) {
+          if (S_treino[i]==j && S_treino[i-1]==k)
+            TransCount[k,j]=TransCount[k,j]+1
+        }
+      }
+    }
+    
+    for (j in 1:K) {
+      for (k in 1:K) {
+        if (TransCount[k,j]==0){
+          positions = sample(2:length(S_treino), 4)
+          for (d in 1:4) {
+            S_treino[positions[d]]=j
+            S_treino[positions[d]-1]=k
+          }
+        }
+      }
+    }
+#
+    for (k in 1:K){
+      id = S_treino == k
+      mu_hat[k] = sum(id*Y_training)/sum(id)
+      Y_id_list = split(Y_training,id)
+      Y_id = unlist(Y_id_list[2], use.names = FALSE)
+      sigma_hat[k] = max(sqrt((sum((Y_id - mu_hat[k])^2)) / (sum(id) - 1)),0.001) #DECIDIR SOBRE O ESTIMADOR DA VARIANCIA (VICIADO OU NṼICIADO)
+    }
       
       LL2_parte1 = 0
       LL2_parte2 = 0
@@ -674,37 +639,40 @@ for (h in 1:length(lambdas)){
       temp=NULL
       for (i in 2:length(Y_training)) {#Calculo do terceiro segmento da LL
         for (g in 1:K) {
-          temp[g]<-exp(X[i,]%*%matrix(BetaArray[g,,S_treino[i-1]],ncol=1))
+          temp[g]<-exp(X_training[i,]%*%matrix(BetaArray[g,,S_treino[i-1]],ncol=1))
         }
-        LL2_parte4 = LL2_parte4 + (X[i,]%*%matrix(BetaArray[S_treino[i],,S_treino[i-1]]) - log(sum(temp), base = exp(1)))
+        LL2_parte4 = LL2_parte4 + (X_training[i,]%*%matrix(BetaArray[S_treino[i],,S_treino[i-1]]) - log(sum(temp), base = exp(1)))
       }
       VeroSimProxima <- log(P0[S_treino[1]]) + LL2_parte1 - (LL2_parte2 + LL2_parte3) + LL2_parte4 #calculo da LogVerosim
       
-      val=val+1
-      tolval[val]<-VeroSimProxima-VeroSimActual
-      
-      # print(tolval[val])
+    tolval[val]<-VeroSimProxima-VeroSimActual
+    VeroSimActual<-VeroSimProxima
+
     }###fim da segunda rodada do EM Estocastico###
     
     Y_hat_training <- NULL
     for (n in 2:length(Y_training)){
       prob <- NULL
-      for (i in 1:K) prob[i]<-exp(X_training[t,]%*%matrix(BetaArray[i,,S_treino[n-1]],ncol=1))
+      for (i in 1:K) prob[i]<-exp(X_training[n,]%*%matrix(BetaArray[i,,S_treino[n-1]],ncol=1))
       prob<-prob/sum(prob)
       Y_hat_training[n] <- sum(prob * mu_hat)
     }
     
     Y_hat_validation = NULL
     S_hat_validation = NULL
-    S_hat_validation[1]<-rDiscreta(1/K) #O valor para o primeiro estado oculto
-    Y_hat_validation[1]<-rnorm(1,mu_hat[S_hat_validation[1]],sigma_hat[S_hat_validation[1]])# O valor para o primeiro valor observavel
-    for (t in 2:length(Y_validation)){
-      prob<-NULL
-      for (i in 1:K) prob[i]<-exp(X_validation[t,]%*%matrix(BetaArray[i,,S_hat_validation[t-1]],ncol=1))
-      prob<-prob/sum(prob)
-      S_hat_validation[t]<-which.max(prob)
-      Y_hat_validation[t]<-sum(prob * mu_hat)
-    }
+  prob<-NULL
+  t<-1
+  for (i in 1:K) prob[i]<-exp(X_validation[t,]%*%matrix(BetaArray[i,,S_treino[length(Y_training)]],ncol=1))
+  prob<-prob/sum(prob)
+  S_hat_validation[1]<-which.max(prob)
+  Y_hat_validation[1]<-sum(prob * mu_hat)
+  for (t in 2:length(Y_validation)){
+    prob<-NULL
+    for (i in 1:K) prob[i]<-exp(X_validation[t,]%*%matrix(BetaArray[i,,S_hat_validation[t-1]],ncol=1))
+    prob<-prob/sum(prob)
+    S_hat_validation[t]<-which.max(prob)
+    Y_hat_validation[t]<-sum(prob * mu_hat)
+  }
     
     Beta_Estimates <- NULL
     for (i in 2:K) {
@@ -738,7 +706,7 @@ min_index = which.min(lasso_RMSE)
 # COLETANDO VALORES NO CONJUNTO DE VALIDAÇÃO
 
 # Valor de Lambda optimo
-#Best_Lambdas <- lasso_lambdas[min_index,]
+Best_Lambdas <- lasso_lambdas[min_index,]
 
 # Coletar valores estimados dos parâmetros das VA observaveis
 Mu_Hat <- lasso_mu_hat_estimates[min_index,]
@@ -762,200 +730,22 @@ MSPE_Validação <- lasso_RMSE[min_index] #Mean Square Predictive Error para o m
 Y_hat_test <- NULL
 S_hat_test <- NULL
 
-S_hat_test[1]<-1 #O valor para o primeiro estado oculto
-Y_hat_test[1]<-rnorm(1,Mu_Hat[S_hat_test[1]],Sigma_Hat[S_hat_test[1]])# O valor para o primeiro valor observavel
+set.seed(100)
+t<-1
+prob<-NULL
+for (i in 1:K) prob[i]<-exp(X_test[t,]%*%matrix(Best_Beta_Arrays[i,,lasso_S[min_index,ncol(lasso_S)]],ncol=1))
+prob<-prob/sum(prob)
+print(prob)
+S_hat_test[t]<-which.max(prob)
+Y_hat_test[t]<-sum(prob * Mu_Hat)
 for (t in 2:length(Y_test)){
   prob<-NULL
   for (i in 1:K) prob[i]<-exp(X_test[t,]%*%matrix(Best_Beta_Arrays[i,,S_hat_test[t-1]],ncol=1))
   prob<-prob/sum(prob)
+#  print(prob)
   S_hat_test[t]<-which.max(prob)
   Y_hat_test[t]<-sum(prob * Mu_Hat)
 }
 
 MSPE_Teste <- (sum((Y_hat_test - Y_test)^2))/length(Y_test)
-Y_test_DF <- Y_test
-Y_hat_test_NHMM_DF <- Y_hat_test
-S_hat_test_NHMM_DF<- S_hat_test
-
-tempo_final<-Sys.time()
-Tempo <- difftime(tempo_final, tempo_inicial, units = "secs")[[1]]/60
-
-# Train dataset for other models (Concatenation of train and validation)
-X_tr <- NULL
-Y_tr <- NULL
-
-X_tr <- rbind(X_training, X_validation)
-Y_tr <- c(Y_training, Y_validation)
-
-############################################
-# GLMNET
-
-
-glmnet_mod <- cv.glmnet(X_training, Y_training)
-Y_hat_test_glmnet <- predict(glmnet_mod, newx = X_test, s = "lambda.min")
-MSPE_Teste_glmnet <- sum((Y_test - Y_hat_test_glmnet)^2)/length(Y_test) 
-Y_hat_test_glmnet_DF <- Y_hat_test_glmnet
-#############################################
-
-############################################
-# ARIMA
-
-arima_mod <- try(auto.arima(y=Y_training, xreg = data.matrix(X_training)))
-Y_hat_test_arima <- forecast(arima_mod,xreg=data.matrix(X_test))  
-Y_hat_test_arima_DF <- Y_hat_test_arima$mean
-MSPE_Teste_arima <- sum((Y_test - Y_hat_test_arima_DF)^2)/length(Y_test)
-
-
-df <- data.frame(x = as.numeric(1:length(Y_test)),
-                 Real = as.numeric(Y_test),
-                 NHMM_Global_LASSO = as.numeric(Y_hat_test_NHMM_DF),
-                 ARIMA = as.numeric(Y_hat_test_arima_DF),
-                 GLMNET = as.numeric(Y_hat_test_glmnet_DF)
-)
-# Convert to long format
-df_long <- pivot_longer(df, 
-                        cols = c(Real, NHMM_Global_LASSO, ARIMA, GLMNET), 
-                        values_to = "Prediction",
-                        names_to = "Algorithm")
-
-# Plot
-ggplot(df_long,
-       aes(
-         x = x,
-         y = Prediction,
-         color = Algorithm,
-         linetype = Algorithm
-       )) +
-  geom_line(size = 0.7) +
-  xlab("Index") +
-  ylab("Predictions") +
-  scale_x_continuous(breaks = seq(0, length(Y_test), by = 5), limits = c(1,length(Y_test))) +
-  scale_linetype_manual(values = c(Real = "solid", NHMM_Global_LASSO = "dashed", ARIMA = "dotted", GLMNET = "dotted")) + 
-  scale_color_manual(values = c("salmon1", "palegreen3", "steelblue3", "purple", "gray60"))+
-  theme_minimal() 
-
-
-##################################
-### GENERATING CI(95%)
-##################################
-n_samples <- 30
-Y_test_CI_matrix <- matrix(nrow = n_samples, ncol = length(Y_test))
-S_test_CI_matrix <- matrix(nrow = n_samples, ncol = length(Y_test))
-for (t in 1:length(Y_test)){
-  if (t == 1){
-    Y_test_CI_matrix[,1] <- rnorm(n_samples, Mu_Hat[S_hat_test[1]],Sigma_Hat[S_hat_test[1]])
-    S_test_CI_matrix[,1] <- rep(S_hat_test[1], n_samples)
-  } else {
-    prob<-NULL
-    for (i in 1:K) prob[i]<-exp(X_test[t,]%*%matrix(Best_Beta_Arrays[i,,S_hat_test[t-1]],ncol=1))
-    prob<-prob/sum(prob)
-    for (l in 1:n_samples){
-      S_test_CI_matrix[l,t]<-rDiscreta(prob)
-      #S_test_CI_matrix[l,t]<-which.max(prob)
-      Y_test_CI_matrix[l,t]<-rnorm(1, Mu_Hat[S_test_CI_matrix[l,t]],Sigma_Hat[S_test_CI_matrix[l,t]])  
-      #Y_test_CI_matrix[l,t]<-sum(prob * Mu_Hat)
-    }
-  }
-}
-
-Y_test_CI_matrix <- data.frame(Y_test_CI_matrix)
-
-############################################
-# Assuming Y_test_CI_matrix is your dataframe with 44 columns and 100 rows
-# Calculate mean and 95% CI for each column
-
-n <- nrow(Y_test_CI_matrix)
-
-# Function to calculate mean, SD, and 95% CI
-calculate_stats <- function(column) {
-  mean_val <- mean(column, na.rm = TRUE)
-  sd_val <- sd(column, na.rm = TRUE)
-  se <- sd_val / sqrt(n)
-  margin_error <- qt(p = 0.975, df = n - 1) * se
-  lower <- mean_val - margin_error
-  upper <- mean_val + margin_error
-  return(c(mean = mean_val, margin_error = margin_error))
-}
-
-# Apply the function to each column
-stats <- t(apply(Y_test_CI_matrix, 2, calculate_stats))
-stats_df <- as.data.frame(stats)
-stats_df$Column <- 1:ncol(Y_test_CI_matrix)
-
-# Rename columns
-colnames(stats_df) <- c("Mean","Margin", "Index")
-
-
-stats_df$Arima_test <- Y_hat_test_arima_DF
-stats_df$Glmnet_test <- Y_hat_test_glmnet
-stats_df$NHMM_Individual <- Y_hat_test_NHMM_DF
-stats_df$Real_Values <- Y_test
-summary(stats_df)
-# Create a new column 'value_nhmm_updated' by adding 'margin' to 'value_nhmm'
-stats_df <- stats_df %>%
-  mutate(Upper = NHMM_Individual + Margin)
-stats_df <- stats_df %>%
-  mutate(Lower = NHMM_Individual - Margin)
-
-stats_df <- stats_df %>%
-  mutate(
-    Is_in_IC = ifelse(Real_Values >= Lower & Real_Values <= Upper, 1, 0)
-  )
-
-# Plot using ggplot2
-ggplot(stats_df, aes(x = Index)) +
-  geom_ribbon(aes(ymin = Lower, ymax = Upper), fill = "lightgray", alpha = 0.5) + # Shade 95% CI
-  geom_line(aes(y = NHMM_Individual), color = "blue", size = 1) + # Plot the mean line
-  geom_point(aes(y = NHMM_Individual), color = "blue", size = 2) + # Add points at the means
-  geom_line(aes(y = Lower), color = "red", linetype = "dashed", size = 0.8) + # Lower bound (dashed red line)
-  geom_line(aes(y = Upper), color = "red", linetype = "dashed", size = 0.8) + # Upper bound (dashed red line)
-  labs(
-    x = "Column Index",
-    y = "Value"
-  ) +
-  theme_minimal() +
-  theme(
-    axis.title.x = element_text(size = 19),  # Increase size of x-axis label
-    axis.title.y = element_text(size = 19),  # Increase size of y-axis label
-    axis.text.x = element_text(size = 17.5),  # Increase size of x-axis ticks
-    axis.text.y = element_text(size = 17.5)   # Increase size of y-axis ticks
-  )
-############################################
-
-stats_df
-
-stats_df <- stats_df %>%
-  mutate(
-    Binary = ifelse(Real_Values >= Lower & Real_Values <= Upper, 1, 0)
-  )
-
-
-df_train <- rbind(S_hat_train, Y_hat_train, Y_training)
-df_validation <- rbind(Best_S, Best_Y, Y_validation)
-df_test <- rbind(S_hat_test, Y_hat_test, Y_test)
-
-df_train <- data.frame(df_train)
-df_validation <- data.frame(df_validation)
-df_test <- data.frame(df_test)
-stats_df <- data.frame(stats_df)
-
-Algo <- c("MSPE_NHMM_Ind", "MSPE_ARIMA", "MSPE_GLMNET")
-MSPE <- c(MSPE_Teste, MSPE_Teste_arima, MSPE_Teste_glmnet)
-df_MSPE<-data.frame(Algo,MSPE)
-
-Param <- c("Mu_1","Mu_2","Sigma_1","Sigma_2")
-Estimado <-c(Mu_Hat[1],Mu_Hat[2], Sigma_Hat[1],Sigma_Hat[2])
-df_params <- data.frame(Param, Estimado)
-
-lasso_Beta_estimates <- data.frame(lasso_Beta_estimates)
-
-write.csv(df_train, paste("1_DF_Train_Application_K",toString(K),"_Individual.csv", sep = ""), row.names=FALSE)
-write.csv(df_validation, paste("2_DF_Validation_Application_K",toString(K),"_Individual.csv", sep = ""), row.names=FALSE)
-write.csv(df_test, paste("3_DF_Test_Application_K",toString(K),"_Individual.csv", sep = ""), row.names=FALSE)
-write.csv(df_MSPE, paste("4_DF_MSPE_Application_K",toString(K),"_Individual.csv", sep = ""), row.names=FALSE)
-write.csv(df_params, paste("5_DF_Params_Application_K",toString(K),"_Individual.csv", sep = ""), row.names=FALSE)
-write.csv(lasso_Beta_estimates, paste("6_DF_all_LASSO_Beta_Estimates_Application_K",toString(K),"_Individual.csv", sep = ""), row.names=FALSE)
-write.csv(stats_df, paste("7_DF_Test_DataStats_Application_K",toString(K),"_Individual.csv", sep = ""), row.names=FALSE)
-
-saveRDS(Best_Beta_Arrays, paste("8_Best_LASSO_Betas_Estimates_Application_K",toString(K),"_Individual.rds", sep = ""))
-
+MSPE_Teste
