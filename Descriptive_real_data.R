@@ -37,6 +37,9 @@ Y <- dados_semanal$Chuva
 X <- dados_semanal %>% select(-Chuva, -Week)
 T <- length(Y)
 
+library(xtable)
+xtable(round(cor(X),3), caption = "Correlation matrix of the covariates.", label = "tab:corr")
+
 train_size = 0.80
 validation_size = 0.15
 test_size = 0.05
@@ -56,10 +59,7 @@ X_test = X[(cutoff_validation+1):T, ]
 
 pdf("/Users/Daiane/Downloads/whole_serie.pdf",height=3,width=6)
 par(mar=c(3.5,3.5,0.5,0.5),mgp=c(2.0,0.5,0)) # aqui vc consegue mexer no tamanho das margens do gráficos (em mar), a margem abaixo, à esquerda, acima e à direita e aumentar o tamanho do gráfico no espaço que vc tem. Por exemplo, se não quiser colocar título na figura porque vc vai colocar no latex, no rodapé da figura, não precisa de uma margem grande acima dele.
-plot(Y,type='l',main=" ",xlab="Weeks",ylab="Values of Precipitation")
+plot(Y,type='l',main=" ",xlab="Weeks",ylab="Values of precipitation")
 abline(v=round(cutoff_treino),col = "red", lty = 2)
 abline(v=round(cutoff_validation),col = "red", lty = 2)
 dev.off() # não pode esquecer desse comando.
-
-library(forecast)
-arima_mod <- try(auto.arima(y=Y_training, xreg = data.matrix(X_training)))
